@@ -6,7 +6,7 @@
     <title>Advanced Medical Inventory</title>
     <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode"></script>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
 </head>
 <body class="bg-gray-100">
@@ -59,7 +59,7 @@
         <div v-if="isScanning" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
             <div class="bg-white p-5 rounded-lg shadow-xl">
                 <h2 class="text-2xl mb-4">Scan QR Code</h2>
-                <video ref="scanner" class="w-full max-w-sm"></video>
+                <div id="reader"></div>
                 <button @click="stopScanning" class="mt-4 bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded">
                     Stop Scanning
                 </button>
@@ -70,17 +70,20 @@
         <!-- Scanned Item Action Modal -->
         <div v-if="showScannedItemModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
             <div class="bg-white p-5 rounded-lg shadow-xl w-full max-w-md">
-                <h2 class="text-2xl mb-4">Scanned Item: {{ scannedItem.name }}</h2>
+                <h2 class="text-2xl mb-4">Update Inventory: {{ scannedItem.name }}</h2>
                 <p class="mb-4">Current Quantity: {{ scannedItem.quantity }}</p>
-                <p class="mb-4">What would you like to do?</p>
-                <div class="flex justify-between">
-                    <button @click="updateScannedItem('add')" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded">
-                        Add to Inventory
+                <div class="flex items-center justify-center mb-4">
+                    <button @click="decrementQuantity" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded">
+                        -
                     </button>
-                    <button @click="updateScannedItem('sell')" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded">
-                        Sell from Inventory
+                    <span class="mx-4 text-xl">{{ updateQuantity }}</span>
+                    <button @click="incrementQuantity" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded">
+                        +
                     </button>
                 </div>
+                <button @click="updateInventory" class="w-full bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">
+                    Update Inventory
+                </button>
             </div>
         </div>
     </div>
@@ -95,8 +98,10 @@
                 isScanning: false,
                 showScannedItemModal: false,
                 scannedItem: null,
+                updateQuantity: 0,
                 db: null,
-                scanStatus: 'Ready to scan'
+                scanStatus: 'Ready to scan',
+                html5QrCode: null
             },
             mounted() {
                 this.initDB();
@@ -154,72 +159,72 @@
                     this.isScanning = true;
                     this.scanStatus = 'Initializing camera...';
                     this.$nextTick(() => {
-                        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-                            .then(stream => {
-                                this.$refs.scanner.srcObject = stream;
-                                this.$refs.scanner.setAttribute('playsinline', true);
-                                this.$refs.scanner.play();
-                                this.scanStatus = 'Camera ready. Scanning for QR code...';
-                                requestAnimationFrame(this.scan);
-                            })
-                            .catch(error => {
-                                console.error('Error accessing the camera:', error);
-                                this.scanStatus = 'Error accessing the camera. Please check permissions.';
-                            });
+                        this.html5QrCode = new Html5Qrcode("reader");
+                        this.html5QrCode.start(
+                            { facingMode: "environment" },
+                            {
+                                fps: 10,
+                                qrbox: { width: 250, height: 250 }
+                            },
+                            this.onScanSuccess,
+                            this.onScanFailure
+                        ).catch((err) => {
+                            console.error(`Unable to start scanning: ${err}`);
+                            this.scanStatus = 'Error starting camera. Please check permissions.';
+                        });
                     });
                 },
                 stopScanning() {
-                    this.isScanning = false;
-                    this.scanStatus = 'Scanning stopped';
-                    if (this.$refs.scanner && this.$refs.scanner.srcObject) {
-                        this.$refs.scanner.srcObject.getTracks().forEach(track => track.stop());
+                    if (this.html5QrCode) {
+                        this.html5QrCode.stop().then(() => {
+                            this.isScanning = false;
+                            this.scanStatus = 'Scanning stopped';
+                        }).catch((err) => {
+                            console.error(`Unable to stop scanning: ${err}`);
+                        });
                     }
                 },
-                scan() {
-                    if (this.$refs.scanner && this.$refs.scanner.readyState === this.$refs.scanner.HAVE_ENOUGH_DATA) {
-                        const canvas = document.createElement('canvas');
-                        canvas.width = this.$refs.scanner.videoWidth;
-                        canvas.height = this.$refs.scanner.videoHeight;
-                        canvas.getContext('2d').drawImage(this.$refs.scanner, 0, 0, canvas.width, canvas.height);
-                        const imageData = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
-                        const code = jsQR(imageData.data, imageData.width, imageData.height);
-                        if (code) {
-                            this.scanStatus = 'QR code detected! Processing...';
-                            console.log('QR code detected:', code.data);
-                            try {
-                                this.scannedItem = JSON.parse(code.data);
-                                this.stopScanning();
-                                this.showScannedItemModal = true;
-                            } catch (error) {
-                                console.error('Error parsing QR code data:', error);
-                                this.scanStatus = 'Invalid QR code. Please try again.';
-                            }
-                        } else {
-                            this.scanStatus = 'Scanning for QR code...';
-                        }
-                    }
-                    if (this.isScanning) {
-                        requestAnimationFrame(this.scan);
+                onScanSuccess(decodedText, decodedResult) {
+                    this.scanStatus = 'QR code detected! Processing...';
+                    console.log(`Scan result: ${decodedText}`, decodedResult);
+                    try {
+                        this.scannedItem = JSON.parse(decodedText);
+                        this.updateQuantity = 0;
+                        this.stopScanning();
+                        this.showScannedItemModal = true;
+                    } catch (error) {
+                        console.error('Error parsing QR code data:', error);
+                        this.scanStatus = 'Invalid QR code. Please try again.';
                     }
                 },
-                updateScannedItem(action) {
+                onScanFailure(error) {
+                    // console.error(`Scan failure: ${error}`);
+                    this.scanStatus = 'Scanning for QR code...';
+                },
+                incrementQuantity() {
+                    this.updateQuantity++;
+                },
+                decrementQuantity() {
+                    if (this.updateQuantity > -this.scannedItem.quantity) {
+                        this.updateQuantity--;
+                    }
+                },
+                updateInventory() {
                     const transaction = this.db.transaction(['items'], 'readwrite');
                     const objectStore = transaction.objectStore('items');
                     const request = objectStore.get(this.scannedItem.id);
                     request.onsuccess = (event) => {
                         const item = event.target.result;
                         if (item) {
-                            if (action === 'add') {
-                                item.quantity++;
-                            } else if (action === 'sell' && item.quantity > 0) {
-                                item.quantity--;
-                            }
+                            item.quantity += this.updateQuantity;
+                            if (item.quantity < 0) item.quantity = 0;
                             objectStore.put(item);
                         } else {
-                            if (action === 'add') {
+                            if (this.updateQuantity > 0) {
+                                this.scannedItem.quantity = this.updateQuantity;
                                 objectStore.add(this.scannedItem);
                             } else {
-                                console.error('Cannot sell non-existent item');
+                                console.error('Cannot update non-existent item');
                             }
                         }
                         this.loadItems();
