@@ -63,6 +63,7 @@
                 <button @click="stopScanning" class="mt-4 bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded">
                     Stop Scanning
                 </button>
+                <p class="mt-2 text-sm text-gray-600">{{ scanStatus }}</p>
             </div>
         </div>
 
@@ -94,7 +95,8 @@
                 isScanning: false,
                 showScannedItemModal: false,
                 scannedItem: null,
-                db: null
+                db: null,
+                scanStatus: 'Ready to scan'
             },
             mounted() {
                 this.initDB();
@@ -150,18 +152,25 @@
                 },
                 startScanning() {
                     this.isScanning = true;
+                    this.scanStatus = 'Initializing camera...';
                     this.$nextTick(() => {
                         navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
                             .then(stream => {
                                 this.$refs.scanner.srcObject = stream;
                                 this.$refs.scanner.setAttribute('playsinline', true);
                                 this.$refs.scanner.play();
+                                this.scanStatus = 'Camera ready. Scanning for QR code...';
                                 requestAnimationFrame(this.scan);
+                            })
+                            .catch(error => {
+                                console.error('Error accessing the camera:', error);
+                                this.scanStatus = 'Error accessing the camera. Please check permissions.';
                             });
                     });
                 },
                 stopScanning() {
                     this.isScanning = false;
+                    this.scanStatus = 'Scanning stopped';
                     if (this.$refs.scanner && this.$refs.scanner.srcObject) {
                         this.$refs.scanner.srcObject.getTracks().forEach(track => track.stop());
                     }
@@ -175,13 +184,21 @@
                         const imageData = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
                         const code = jsQR(imageData.data, imageData.width, imageData.height);
                         if (code) {
-                            this.stopScanning();
-                            this.scannedItem = JSON.parse(code.data);
-                            this.showScannedItemModal = true;
-                        } else if (this.isScanning) {
-                            requestAnimationFrame(this.scan);
+                            this.scanStatus = 'QR code detected! Processing...';
+                            console.log('QR code detected:', code.data);
+                            try {
+                                this.scannedItem = JSON.parse(code.data);
+                                this.stopScanning();
+                                this.showScannedItemModal = true;
+                            } catch (error) {
+                                console.error('Error parsing QR code data:', error);
+                                this.scanStatus = 'Invalid QR code. Please try again.';
+                            }
+                        } else {
+                            this.scanStatus = 'Scanning for QR code...';
                         }
-                    } else if (this.isScanning) {
+                    }
+                    if (this.isScanning) {
                         requestAnimationFrame(this.scan);
                     }
                 },
@@ -191,12 +208,20 @@
                     const request = objectStore.get(this.scannedItem.id);
                     request.onsuccess = (event) => {
                         const item = event.target.result;
-                        if (action === 'add') {
-                            item.quantity++;
-                        } else if (action === 'sell' && item.quantity > 0) {
-                            item.quantity--;
+                        if (item) {
+                            if (action === 'add') {
+                                item.quantity++;
+                            } else if (action === 'sell' && item.quantity > 0) {
+                                item.quantity--;
+                            }
+                            objectStore.put(item);
+                        } else {
+                            if (action === 'add') {
+                                objectStore.add(this.scannedItem);
+                            } else {
+                                console.error('Cannot sell non-existent item');
+                            }
                         }
-                        objectStore.put(item);
                         this.loadItems();
                         this.showScannedItemModal = false;
                     };
